@@ -1,8 +1,9 @@
 import argparse
 from pathlib import Path
-from diarize import run_diarization
-from transcribe import run_transcription
-from merge import merge_diarization_and_transcript, write_outputs
+from app.diarize import run_diarization
+from app.transcribe import run_transcription
+from app.merge import merge_diarization_and_transcript, write_outputs
+
 
 def parse_args():
     p = argparse.ArgumentParser()
