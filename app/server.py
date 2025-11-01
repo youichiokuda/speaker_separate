@@ -1,67 +1,116 @@
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
+import os
+import traceback
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-import uuid, os, sys
-from app.main import main as pipeline_main
+from diarize import run_diarization
+from transcribe import run_transcription
+from merge import merge_diarization_and_transcript, write_outputs
 
-app = FastAPI(title="Speaker Diarization + ASR")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# ======================================
+# FastAPI 初期設定
+# ======================================
+app = FastAPI(title="Speaker Separation & Transcription API", version="1.0")
 
-DATA_DIR = Path(os.getenv("DATA_DIR", "/data")).resolve()
-UPLOAD_DIR = DATA_DIR / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# CORS（Renderデプロイ後の外部アクセス対応）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-HTML_FORM = """<!doctype html><html><body>
-<h1>話者分離 + 文字起こし</h1>
-<form action='/api/transcribe' method='post' enctype='multipart/form-data'>
-<p><input type='file' name='file' accept='.wav,.mp3,.m4a,.mp4' required></p>
-<p>Whisperモデル: <input name='whisper_model' value='small'></p>
-<p>言語（空で自動）: <input name='language' value='ja'></p>
-<p>話者数（auto or 数値）: <input name='num_speakers' value='auto'></p>
-<p><button type='submit'>実行</button></p></form></body></html>"""
+# 保存ディレクトリ
+DATA_DIR = Path("/data")
+DATA_DIR.mkdir(exist_ok=True)
 
+
+# ======================================
+# トップページ (HTML)
+# ======================================
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return HTML_FORM
+    return """
+    <html>
+      <head><title>Speaker Separation</title></head>
+      <body style="font-family: sans-serif;">
+        <h2>🎙️ Speaker Separation + Transcription</h2>
+        <form action="/api/transcribe" method="post" enctype="multipart/form-data">
+          <p><input type="file" name="file" accept="audio/*,video/*" required></p>
+          <p>Whisper model:
+             <select name="whisper_model">
+               <option value="small">small</option>
+               <option value="medium">medium</option>
+               <option value="large">large</option>
+             </select>
+          </p>
+          <p>Language: <input type="text" name="language" value="ja"></p>
+          <p>Number of speakers: <input type="text" name="num_speakers" value="auto"></p>
+          <p><input type="submit" value="Start"></p>
+        </form>
+      </body>
+    </html>
+    """
 
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
 
+# ======================================
+# メイン処理エンドポイント
+# ======================================
 @app.post("/api/transcribe")
-async def transcribe(file: UploadFile = File(...), whisper_model: str = Form("small"),
-                     language: str | None = Form(None), num_speakers: str = Form("auto")):
-    uid = uuid.uuid4().hex[:8]
-    src_path = UPLOAD_DIR / f"{uid}_{file.filename}"
-    with open(src_path, "wb") as f:
-        f.write(await file.read())
+async def transcribe_api(
+    file: UploadFile = File(...),
+    whisper_model: str = Form("small"),
+    language: str = Form("ja"),
+    num_speakers: str = Form("auto"),
+):
+    """
+    音声ファイルを受け取り、話者分離＋文字起こし＋マージを行うAPI
+    """
 
-    outdir = DATA_DIR / "outputs" / uid
-    outdir.mkdir(parents=True, exist_ok=True)
-    sys.argv = ["main.py", "--input", str(src_path), "--outdir", str(outdir),
-                "--whisper_model", whisper_model, "--num_speakers", num_speakers]
-    if language:
-        sys.argv += ["--language", language]
     try:
-        pipeline_main()
+        # --- 入力ファイルの保存 ---
+        input_path = DATA_DIR / file.filename
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        # --- 1. 話者分離 ---
+        print("==> 1/3 Diarization...")
+        diarization = run_diarization(input_path, num_speakers=num_speakers)
+
+        # --- 2. 音声文字起こし ---
+        print("==> 2/3 Transcription...")
+        transcript = run_transcription(input_path, whisper_model, language)
+
+        # --- 3. 話者情報と文字起こしのマージ ---
+        print("==> 3/3 Merge...")
+        merged_segments = merge_diarization_and_transcript(diarization, transcript)
+
+        # --- 出力ファイル生成 ---
+        output_dir = DATA_DIR / file.filename.replace(".", "_out.")
+        output_dir.mkdir(exist_ok=True)
+        output_files = write_outputs(merged_segments, output_dir)
+
+        return {
+            "status": "success",
+            "message": "Transcription and diarization complete.",
+            "outputs": {name: str(path) for name, path in output_files.items()},
+        }
+
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
+        # --- エラー時に詳細を返す ---
+        tb = traceback.format_exc()
+        print("[/api/transcribe] ERROR\n", tb)
+        return JSONResponse(
+            {"error": str(e), "traceback": tb},
+            status_code=500
+        )
 
-    base = f"/api/download/{uid}"
-    return {
-        "id": uid,
-        "files": {
-            "markdown": f"{base}/transcript_speaker.md",
-            "srt": f"{base}/transcript_speaker.srt",
-            "vtt": f"{base}/transcript_speaker.vtt",
-            "csv": f"{base}/segments.csv",
-        },
-    }
 
-@app.get("/api/download/{uid}/{filename}")
-def download(uid: str, filename: str):
-    fpath = DATA_DIR / "outputs" / uid / filename
-    if not fpath.exists():
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(fpath)
+# ======================================
+# Render 健康チェック用
+# ======================================
+@app.get("/healthz")
+def health_check():
+    return {"status": "ok"}
