@@ -4,9 +4,9 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from diarize import run_diarization
-from transcribe import run_transcription
-from merge import merge_diarization_and_transcript, write_outputs
+from app.diarize import run_diarization
+from app.transcribe import run_transcription
+from app.merge import merge_diarization_and_transcript, write_outputs
 
 # ======================================
 # FastAPI 初期設定
