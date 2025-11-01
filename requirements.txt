@@ -1,15 +1,30 @@
-faster-whisper==1.0.3
-pyannote.audio==3.1.1
-torch==2.2.2
-torchaudio==2.2.2
-ffmpeg-python==0.2.0
-pydub==0.25.1
-numpy==1.26.4
-pandas==2.2.2
-tqdm==4.66.5
-python-dotenv==1.0.1
+# ---- Core runtime ----
 fastapi==0.115.2
 uvicorn==0.30.6
-requests>=2.31.0
 python-multipart==0.0.9
+requests>=2.31.0
+
+# ---- Audio / DSP ----
+soundfile==0.13.1         # torchaudio(soundfile backend) が参照
+ffmpeg-python==0.2.0
+pydub==0.25.1
+
+# ---- Whisper (CPU) ----
+faster-whisper==1.0.3     # 依存: ctranslate2 を自動解決
+
+# ---- PyTorch (CPU) ----
+torch==2.2.2
+torchaudio==2.2.2
+
+# ---- Pyannote (diarization) ----
+pyannote.audio==3.1.1
+speechbrain==1.0.3        # pyannote内部で参照されるため明示
+
+# ---- HF Hub (token互換のため固定) ----
 huggingface-hub==0.24.6
+
+# ---- Utilities (ログ/進捗/数値)
+tqdm==4.66.5
+numpy==1.26.4
+pandas==2.2.2
+python-dotenv==1.0.1
