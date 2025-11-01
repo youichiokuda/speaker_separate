@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: speaker-asr
+    env: docker
+    plan: starter
+    region: singapore
+    runtime:
+      dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /healthz
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 30
+    envVars:
+      - key: HUGGINGFACE_TOKEN
+        sync: false
+      - key: DATA_DIR
+        value: /data
+      - key: TRANSFORMERS_CACHE
+        value: /data/hf/cache
+      - key: HF_HOME
+        value: /data/hf
