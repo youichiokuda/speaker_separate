@@ -7,13 +7,13 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# === app内モジュールを明示的にimport ===
+# ====== アプリ内部モジュール ======
 from app.diarize import run_diarization
 from app.transcribe import run_transcription
 from app.merge import merge_diarization_and_transcript, write_outputs
 
 # ==========================================================
-# FastAPI 初期設定
+# FastAPI アプリ設定
 # ==========================================================
 app = FastAPI(title="Speaker Separation & Transcription API", version="1.2")
 
@@ -29,7 +29,7 @@ DATA_DIR = Path("/data")
 DATA_DIR.mkdir(exist_ok=True)
 
 # ==========================================================
-# ユーティリティ関数：ffmpeg変換（m4a等→wav）
+# ffmpeg: m4a / mp4 などを WAV に変換
 # ==========================================================
 def convert_to_wav(src_path: Path, out_dir: Path) -> Path:
     """任意フォーマットを16kHz mono WAVに変換"""
@@ -48,7 +48,7 @@ def convert_to_wav(src_path: Path, out_dir: Path) -> Path:
 
 
 # ==========================================================
-# トップページ（簡易フォーム）
+# トップページ（フォームUI）
 # ==========================================================
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -76,7 +76,7 @@ def index():
 
 
 # ==========================================================
-# メイン処理エンドポイント
+# /api/transcribe: メイン処理
 # ==========================================================
 @app.post("/api/transcribe")
 async def transcribe_api(
@@ -87,21 +87,25 @@ async def transcribe_api(
 ):
     """音声ファイルを受け取り、話者分離＋文字起こし＋マージを実施"""
     try:
-        # --- 一時保存 ---
+        # --- 一時ファイル保存 ---
         input_path = DATA_DIR / file.filename
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
-        # --- m4aなど非対応フォーマットをwavへ変換 ---
-        wav_path = convert_to_wav(input_path, DATA_DIR)
+        # --- m4a/mp4等をWAVへ変換 ---
+        print("==> Converting to WAV if necessary...")
+        src = input_path
+        if input_path.suffix.lower() != ".wav":
+            src = convert_to_wav(input_path, DATA_DIR)
+        print(f"Using source file: {src}")
 
         # --- 1. 話者分離 ---
         print("==> 1/3 Diarization...")
-        diarization = run_diarization(wav_path, num_speakers=num_speakers)
+        diarization = run_diarization(src, num_speakers=num_speakers)
 
         # --- 2. 文字起こし ---
         print("==> 2/3 Transcription...")
-        transcript = run_transcription(wav_path, whisper_model, language)
+        transcript = run_transcription(src, whisper_model, language)
 
         # --- 3. マージ ---
         print("==> 3/3 Merge...")
@@ -125,7 +129,7 @@ async def transcribe_api(
 
 
 # ==========================================================
-# Render用ヘルスチェック
+# Render ヘルスチェック
 # ==========================================================
 @app.get("/healthz")
 def health_check():
