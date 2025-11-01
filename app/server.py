@@ -1,19 +1,22 @@
 import os
 import traceback
+import subprocess
+import uuid
+from pathlib import Path
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
+
+# === app内モジュールを明示的にimport ===
 from app.diarize import run_diarization
 from app.transcribe import run_transcription
 from app.merge import merge_diarization_and_transcript, write_outputs
 
-# ======================================
+# ==========================================================
 # FastAPI 初期設定
-# ======================================
-app = FastAPI(title="Speaker Separation & Transcription API", version="1.0")
+# ==========================================================
+app = FastAPI(title="Speaker Separation & Transcription API", version="1.2")
 
-# CORS（Renderデプロイ後の外部アクセス対応）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,14 +25,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 保存ディレクトリ
 DATA_DIR = Path("/data")
 DATA_DIR.mkdir(exist_ok=True)
 
+# ==========================================================
+# ユーティリティ関数：ffmpeg変換（m4a等→wav）
+# ==========================================================
+def convert_to_wav(src_path: Path, out_dir: Path) -> Path:
+    """任意フォーマットを16kHz mono WAVに変換"""
+    dst_path = out_dir / f"{uuid.uuid4().hex}.wav"
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(src_path),
+            "-ac", "1", "-ar", "16000",
+            str(dst_path)
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"FFmpeg変換エラー: {e.stderr.decode('utf-8', errors='ignore')}")
+    return dst_path
 
-# ======================================
-# トップページ (HTML)
-# ======================================
+
+# ==========================================================
+# トップページ（簡易フォーム）
+# ==========================================================
 @app.get("/", response_class=HTMLResponse)
 def index():
     return """
@@ -55,9 +75,9 @@ def index():
     """
 
 
-# ======================================
+# ==========================================================
 # メイン処理エンドポイント
-# ======================================
+# ==========================================================
 @app.post("/api/transcribe")
 async def transcribe_api(
     file: UploadFile = File(...),
@@ -65,52 +85,48 @@ async def transcribe_api(
     language: str = Form("ja"),
     num_speakers: str = Form("auto"),
 ):
-    """
-    音声ファイルを受け取り、話者分離＋文字起こし＋マージを行うAPI
-    """
-
+    """音声ファイルを受け取り、話者分離＋文字起こし＋マージを実施"""
     try:
-        # --- 入力ファイルの保存 ---
+        # --- 一時保存 ---
         input_path = DATA_DIR / file.filename
         with open(input_path, "wb") as f:
             f.write(await file.read())
 
+        # --- m4aなど非対応フォーマットをwavへ変換 ---
+        wav_path = convert_to_wav(input_path, DATA_DIR)
+
         # --- 1. 話者分離 ---
         print("==> 1/3 Diarization...")
-        diarization = run_diarization(input_path, num_speakers=num_speakers)
+        diarization = run_diarization(wav_path, num_speakers=num_speakers)
 
-        # --- 2. 音声文字起こし ---
+        # --- 2. 文字起こし ---
         print("==> 2/3 Transcription...")
-        transcript = run_transcription(input_path, whisper_model, language)
+        transcript = run_transcription(wav_path, whisper_model, language)
 
-        # --- 3. 話者情報と文字起こしのマージ ---
+        # --- 3. マージ ---
         print("==> 3/3 Merge...")
         merged_segments = merge_diarization_and_transcript(diarization, transcript)
 
-        # --- 出力ファイル生成 ---
-        output_dir = DATA_DIR / file.filename.replace(".", "_out.")
-        output_dir.mkdir(exist_ok=True)
-        output_files = write_outputs(merged_segments, output_dir)
+        # --- 出力生成 ---
+        outdir = DATA_DIR / (Path(file.filename).stem + "_out")
+        outdir.mkdir(exist_ok=True)
+        outputs = write_outputs(merged_segments, outdir)
 
         return {
             "status": "success",
-            "message": "Transcription and diarization complete.",
-            "outputs": {name: str(path) for name, path in output_files.items()},
+            "message": "Transcription & Diarization complete.",
+            "outputs": {k: str(v) for k, v in outputs.items()},
         }
 
     except Exception as e:
-        # --- エラー時に詳細を返す ---
         tb = traceback.format_exc()
         print("[/api/transcribe] ERROR\n", tb)
-        return JSONResponse(
-            {"error": str(e), "traceback": tb},
-            status_code=500
-        )
+        return JSONResponse({"error": str(e), "traceback": tb}, status_code=500)
 
 
-# ======================================
-# Render 健康チェック用
-# ======================================
+# ==========================================================
+# Render用ヘルスチェック
+# ==========================================================
 @app.get("/healthz")
 def health_check():
     return {"status": "ok"}
